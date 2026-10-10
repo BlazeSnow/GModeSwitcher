@@ -14,7 +14,6 @@ const USTT_BALANCED: u32 = 0xA0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThermalMode {
-    Custom,
     Balanced,
     GMode,
 }
@@ -22,15 +21,16 @@ pub enum ThermalMode {
 impl ThermalMode {
     pub const fn name(self) -> &'static str {
         match self {
-            ThermalMode::Custom => "Custom",
             ThermalMode::Balanced => "Balanced",
             ThermalMode::GMode => "G_Mode",
         }
     }
 
+    /// Names that are not one of the modes this app has fall through to `None`, so a
+    /// leftover name from an older settings file (e.g. `Custom`, which the app no
+    /// longer offers) is safe to read: the caller falls back to Balanced.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            "Custom" => Some(ThermalMode::Custom),
             "Balanced" => Some(ThermalMode::Balanced),
             "G_Mode" | "G-Mode" | "GMode" => Some(ThermalMode::GMode),
             _ => None,
@@ -40,7 +40,6 @@ impl ThermalMode {
     /// Raw mode value; see the switch argument encoding in [`ThermalControl::switch_to`].
     const fn value(self) -> u32 {
         match self {
-            ThermalMode::Custom => 0x00,
             ThermalMode::Balanced => 0x97,
             ThermalMode::GMode => 0xAB,
         }

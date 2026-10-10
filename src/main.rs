@@ -17,7 +17,6 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 
 use crate::thermal::{ThermalControl, ThermalMode};
 
-const ID_MODE_CUSTOM: &str = "mode.custom";
 const ID_MODE_BALANCED: &str = "mode.balanced";
 const ID_MODE_GMODE: &str = "mode.gmode";
 const ID_AUTOSTART: &str = "autostart";
@@ -78,13 +77,6 @@ fn main() {
     let header = PredefinedMenuItem::section_header("模式");
     let separator_a = PredefinedMenuItem::separator();
     let separator_b = PredefinedMenuItem::separator();
-    let custom = CheckMenuItem::with_id(
-        ID_MODE_CUSTOM,
-        "Custom",
-        true,
-        mode == ThermalMode::Custom,
-        None,
-    );
     let balanced = CheckMenuItem::with_id(
         ID_MODE_BALANCED,
         "Balanced",
@@ -107,9 +99,8 @@ fn main() {
         None,
     );
     let quit_entry = MenuItem::with_id(ID_QUIT, "退出", true, None);
-    let items: [&dyn IsMenuItem; 8] = [
+    let items: [&dyn IsMenuItem; 7] = [
         &header,
-        &custom,
         &balanced,
         &g_mode,
         &separator_a,
@@ -147,7 +138,6 @@ fn main() {
     let mut app = App {
         tray,
         thermal,
-        custom,
         balanced,
         g_mode,
         autostart_entry,
@@ -170,7 +160,6 @@ fn main() {
                 return;
             };
             match event.id.0.as_str() {
-                ID_MODE_CUSTOM => state.switch_mode(ThermalMode::Custom),
                 ID_MODE_BALANCED => state.switch_mode(ThermalMode::Balanced),
                 ID_MODE_GMODE => state.switch_mode(ThermalMode::GMode),
                 ID_AUTOSTART => state.toggle_autostart(),
@@ -198,7 +187,6 @@ fn tooltip(mode: ThermalMode) -> String {
 struct App {
     tray: TrayIcon,
     thermal: ThermalControl,
-    custom: CheckMenuItem,
     balanced: CheckMenuItem,
     g_mode: CheckMenuItem,
     autostart_entry: CheckMenuItem,
@@ -250,7 +238,7 @@ impl App {
         self.autostart_entry.set_checked(autostart::is_enabled());
     }
 
-    /// Never leave the machine in Custom or G-Mode after quitting.
+    /// Never leave the machine in G-Mode after quitting.
     fn restore_balanced(&mut self) {
         if self.mode == ThermalMode::Balanced {
             log::line("already Balanced, nothing to restore");
@@ -264,7 +252,6 @@ impl App {
     }
 
     fn refresh_mode_marks(&self) {
-        self.custom.set_checked(self.mode == ThermalMode::Custom);
         self.balanced
             .set_checked(self.mode == ThermalMode::Balanced);
         self.g_mode.set_checked(self.mode == ThermalMode::GMode);
