@@ -52,10 +52,6 @@ impl ThermalMode {
 pub enum Command {
     /// Switch mode; the result is reported back through the worker's sink.
     Apply(ThermalMode),
-    /// Switch mode and block the worker until it reports the result into `Sender<bool>`.
-    /// Used on exit, where the UI thread has to wait for the restore to happen.
-    ApplyBlocking(ThermalMode, Sender<bool>),
-    Shutdown,
 }
 
 /// Everything the worker thread reports back to the UI thread.
@@ -98,17 +94,12 @@ fn run(incoming: Receiver<Command>, sink: impl Fn(WorkerEvent)) {
         }
     };
 
-    while let Ok(command) = incoming.recv() {
-        match command {
-            Command::Apply(mode) => {
-                let ok = control.apply(mode);
-                sink(WorkerEvent::Applied { mode, ok });
-            }
-            Command::ApplyBlocking(mode, ack) => {
-                let _ = ack.send(control.apply(mode));
-            }
-            Command::Shutdown => break,
-        }
+    // The channel closes when the UI thread drops the sender, which is how this
+    // thread ends: quitting the app just exits the process, nothing has to be
+    // finished off first.
+    while let Ok(Command::Apply(mode)) = incoming.recv() {
+        let ok = control.apply(mode);
+        sink(WorkerEvent::Applied { mode, ok });
     }
     log::line("worker thread stopped");
 }

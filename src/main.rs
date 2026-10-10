@@ -12,8 +12,7 @@ mod settings;
 mod thermal;
 mod win;
 
-use std::sync::mpsc::{self, Sender};
-use std::time::Duration;
+use std::sync::mpsc::Sender;
 
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -26,9 +25,6 @@ const ID_MODE_BALANCED: &str = "mode.balanced";
 const ID_MODE_GMODE: &str = "mode.gmode";
 const ID_AUTOSTART: &str = "autostart";
 const ID_QUIT: &str = "quit";
-
-/// How long the exit path waits for the worker to restore Balanced mode.
-const RESTORE_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum UserEvent {
     Menu(MenuEvent),
@@ -214,9 +210,8 @@ fn main() {
         }
 
         if quit {
-            if let Some(state) = app.as_mut() {
-                state.restore_balanced();
-            }
+            // Quitting leaves the machine in whatever mode it is in now: the mode is
+            // not reset on exit, so the next start reapplies the saved one.
             // Dropping the app removes the tray icon before the process ends.
             drop(app.take());
             log::line("--- exit ---");
@@ -297,34 +292,6 @@ impl App {
         }
         // Trust the task scheduler, not the click, and show the real state.
         self.autostart_entry.set_checked(autostart::is_enabled());
-    }
-
-    /// Never leave the machine in G-Mode after quitting: the worker is asked to switch
-    /// back to Balanced and this thread waits (bounded) for its answer before quitting.
-    fn restore_balanced(&mut self) {
-        if self.mode == ThermalMode::Balanced {
-            log::line("already Balanced, nothing to restore");
-        } else {
-            log::line("restoring Balanced before exit");
-            let (ack, result) = mpsc::channel();
-            if self
-                .commands
-                .send(Command::ApplyBlocking(ThermalMode::Balanced, ack))
-                .is_err()
-            {
-                log::line("WMI worker is gone, cannot restore Balanced");
-            } else {
-                match result.recv_timeout(RESTORE_TIMEOUT) {
-                    Ok(true) => log::line("Balanced restored before exit"),
-                    Ok(false) => log::line("worker could not restore Balanced before exit"),
-                    Err(error) => log::line(&format!(
-                        "gave up waiting {RESTORE_TIMEOUT:?} for the Balanced restore: {error}"
-                    )),
-                }
-            }
-        }
-        settings::save(ThermalMode::Balanced);
-        let _ = self.commands.send(Command::Shutdown);
     }
 
     fn refresh_mode_marks(&self) {
