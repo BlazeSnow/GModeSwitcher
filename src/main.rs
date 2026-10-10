@@ -151,7 +151,7 @@ fn main() {
     let mut builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip(tooltip(mode));
-    if let Some(icon) = icon::tray_icon() {
+    if let Some(icon) = icon::tray_icon(mode) {
         builder = builder.with_icon(icon);
     }
     let tray = match builder.build() {
@@ -249,6 +249,10 @@ impl App {
         }
     }
 
+    /// Accounting for a finished switch. On success the check marks, the settings
+    /// file, the tooltip and the tray icon (which is tinted per mode) all follow the
+    /// new mode; on failure the mode did not change, so nothing but the marks is
+    /// touched and the icon stays as it was.
     fn on_mode_applied(&mut self, mode: ThermalMode, ok: bool) {
         if !ok {
             log::line(&format!("switching to {} failed", mode.name()));
@@ -266,6 +270,9 @@ impl App {
         self.mode = mode;
         settings::save(mode);
         self.refresh_mode_marks();
+        if let Some(icon) = icon::tray_icon(mode) {
+            let _ = self.tray.set_icon(Some(icon));
+        }
         let _ = self.tray.set_tooltip(Some(tooltip(mode)));
         log::line(&format!("mode is now {}", mode.name()));
     }
