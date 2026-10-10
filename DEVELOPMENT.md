@@ -169,8 +169,13 @@ mt.exe -nologo -validate_manifest -manifest target\extracted.manifest
 | `version.ps1` | 把 `VERSION` 里的版本号同步进 `Cargo.toml` 的 `[package] version` |
 | `tag.ps1` | 读 `VERSION` 打 tag 并推送，触发发布工作流 |
 
-改版本号的流程：编辑 `VERSION` → 执行 `version.ps1` → 构建一次让 `Cargo.lock` 跟上 → 执行
-`tag.ps1`。
+发版流程：在 `CHANGELOG.md` 里为这次版本补一节 → 编辑 `VERSION` → 执行 `version.ps1` → 构建一次
+让 `Cargo.lock` 跟上 → 执行 `tag.ps1`。
+
+`CHANGELOG.md` 是面向用户的变更记录，体例固定：版本标题写 `## 🏷️ vX.Y.Z`（不带日期），章节用
+`### ✨ 新增` / `### 🚀 改进` / `### 🛠️ 修复` / `### ⚠️ 行为变更`（有内容才出现），每条以自己的
+emoji 加**加粗小标题**开头，讲清改了什么以及为什么。它与工作流里 `generateReleaseNotes` 自动生成
+的发布说明并存，互不替代。
 
 ### 自测
 

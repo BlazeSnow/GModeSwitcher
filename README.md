@@ -37,6 +37,10 @@ cargo build --release
 
 产物为 `target/release/GModeSwitcher.exe`。
 
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 许可证
 
 本项目以 [GNU General Public License v3.0](LICENSE) 授权。
