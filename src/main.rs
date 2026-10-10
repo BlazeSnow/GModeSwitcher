@@ -1,6 +1,8 @@
 // Tray-only app: never allocate a console window. (Cargo rejects `bin.*.windows_subsystem`
-// as an unused manifest key, so the equivalent rustc attribute is used instead.)
-#![windows_subsystem = "windows"]
+// as an unused manifest key, so the equivalent rustc attribute is used instead.) It is
+// skipped when testing, otherwise the test harness would be a GUI binary and its output
+// would go nowhere.
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod autostart;
 mod icon;

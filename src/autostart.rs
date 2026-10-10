@@ -100,3 +100,88 @@ fn write_task_xml(path: &Path, exe: &str) -> std::io::Result<()> {
     }
     std::fs::write(path, bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    const EXE: &str = r"C:\Program Files\GModeSwitcher\GModeSwitcher.exe";
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gmode-switcher-{}-{name}.xml", std::process::id()))
+    }
+
+    /// Writes the task XML for `EXE` and returns the raw bytes plus the decoded text.
+    /// The temporary file is removed again, so nothing is left behind.
+    fn write_and_read_back(name: &str) -> (Vec<u8>, String) {
+        let path = temp_path(name);
+        write_task_xml(&path, EXE).expect("writing the task XML has to succeed");
+        let bytes = std::fs::read(&path).expect("the task XML has to be readable");
+        let _ = std::fs::remove_file(&path);
+
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        let text = String::from_utf16(&units).expect("the task XML has to be valid UTF-16");
+        (bytes, text)
+    }
+
+    #[test]
+    fn task_file_is_utf16le_with_bom() {
+        let (bytes, _) = write_and_read_back("bom");
+        assert!(bytes.len() > 2, "the file must not be empty");
+        assert_eq!(
+            bytes[..2],
+            [0xFF, 0xFE],
+            "the file has to start with the UTF-16LE BOM"
+        );
+        assert_eq!(
+            bytes.len() % 2,
+            0,
+            "UTF-16LE text has an even number of bytes"
+        );
+    }
+
+    #[test]
+    fn task_xml_contains_the_required_settings() {
+        let (_, xml) = write_and_read_back("settings");
+        for expected in [
+            "<RunLevel>HighestAvailable</RunLevel>",
+            "<LogonTrigger>",
+            "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+            "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+            "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+        ] {
+            assert!(xml.contains(expected), "missing {expected} in:\n{xml}");
+        }
+    }
+
+    #[test]
+    fn task_xml_runs_the_given_executable_without_arguments() {
+        let (_, xml) = write_and_read_back("command");
+        assert!(
+            xml.contains(&format!("<Command>\"{EXE}\"</Command>")),
+            "the command has to be the quoted executable path:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Arguments>"),
+            "the task must not pass any command line arguments:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn task_xml_has_no_leftover_placeholders() {
+        let (_, xml) = write_and_read_back("placeholders");
+        for placeholder in ["{DATE}", "{EXE}"] {
+            assert!(
+                !xml.contains(placeholder),
+                "unreplaced {placeholder} in:\n{xml}"
+            );
+        }
+    }
+}

@@ -180,7 +180,7 @@ impl ThermalControl {
     }
 
     fn switch_to(&self, mode_value: u32) -> bool {
-        let arg = ((mode_value & 0xFF) << 8) | 1;
+        let arg = switch_arg(mode_value);
         log::line(&format!(
             "{METHOD}({arg:#06X}) called from thread {:?}",
             thread::current().id()
@@ -259,6 +259,11 @@ impl ThermalControl {
     }
 }
 
+/// Wire argument of `Thermal_Control`: `((mode & 0xFF) << 8) | 1`.
+fn switch_arg(mode_value: u32) -> u32 {
+    ((mode_value & 0xFF) << 8) | 1
+}
+
 /// Out parameter as `u32`; signed variants are read as their raw bit pattern.
 fn value_as_u32(value: &Variant) -> Option<u32> {
     match value {
@@ -320,4 +325,71 @@ fn instance_path(connection: &WMIConnection) -> Result<String, String> {
         Some(error) => format!("{CLASS} 的实例都无法取得 __Path：{error}"),
         None => format!("系统上没有 {CLASS} 实例（未安装 AWCC 驱动或机型不支持）"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_arg_encodes_the_mode_value() {
+        assert_eq!(switch_arg(0x97), 0x9701);
+        assert_eq!(switch_arg(0xAB), 0xAB01);
+        assert_eq!(switch_arg(USTT_BALANCED), 0xA001);
+    }
+
+    #[test]
+    fn mode_values_match_the_awcc_protocol() {
+        assert_eq!(ThermalMode::Balanced.value(), 0x97);
+        assert_eq!(ThermalMode::GMode.value(), 0xAB);
+        assert_eq!(USTT_BALANCED, 0xA0);
+    }
+
+    #[test]
+    fn name_and_from_name_are_inverse() {
+        for mode in [ThermalMode::Balanced, ThermalMode::GMode] {
+            assert_eq!(ThermalMode::from_name(mode.name()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn from_name_accepts_the_known_g_mode_spellings() {
+        for name in ["G_Mode", "G-Mode", "GMode"] {
+            assert_eq!(ThermalMode::from_name(name), Some(ThermalMode::GMode));
+        }
+    }
+
+    /// Compatibility guarantee: `Custom` was removed from the app, so a leftover
+    /// `"Custom"` in an old settings.json has to stay unknown and fall back to
+    /// Balanced instead of being accepted here.
+    #[test]
+    fn from_name_rejects_the_removed_custom_mode() {
+        assert_eq!(ThermalMode::from_name("Custom"), None);
+    }
+
+    #[test]
+    fn value_as_u32_reads_integer_variants() {
+        assert_eq!(value_as_u32(&Variant::UI4(0)), Some(0));
+        assert_eq!(value_as_u32(&Variant::UI1(7)), Some(7));
+        assert_eq!(value_as_u32(&Variant::UI2(0x1234)), Some(0x1234));
+        assert_eq!(
+            value_as_u32(&Variant::UI8(u64::from(u32::MAX))),
+            Some(u32::MAX)
+        );
+        assert_eq!(value_as_u32(&Variant::I8(5)), Some(5));
+        // -1 as a 32-bit signed value is the 0xFFFFFFFF failure sentinel on the wire.
+        assert_eq!(value_as_u32(&Variant::I4(-1)), Some(0xFFFF_FFFF));
+    }
+
+    #[test]
+    fn value_as_u32_rejects_non_integers() {
+        for value in [
+            Variant::String("0".to_string()),
+            Variant::Bool(false),
+            Variant::Null,
+            Variant::Empty,
+        ] {
+            assert_eq!(value_as_u32(&value), None, "unexpected value for {value:?}");
+        }
+    }
 }
