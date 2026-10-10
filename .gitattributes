@@ -1,0 +1,37 @@
+# 提交时统一以 LF 入库，检出规则见下
+* text=auto
+
+# 源码 / 配置：检出为 LF（Rust、GitHub Actions 均兼容）
+*.rs             text eol=lf
+*.toml           text eol=lf
+*.json           text eol=lf
+*.jsonc          text eol=lf
+*.md             text eol=lf
+*.svg            text eol=lf
+*.yml            text eol=lf
+*.yaml           text eol=lf
+*.gitignore      text eol=lf
+*.gitattributes  text eol=lf
+LICENSE          text eol=lf
+VERSION          text eol=lf
+
+# Windows 脚本：检出为 CRLF，并保留 UTF-8 BOM（否则 PowerShell 5.1 会按 GBK 解析中文）
+*.ps1            text eol=crlf
+*.bat            text eol=crlf
+*.cmd            text eol=crlf
+
+# 二进制文件（禁止换行符转换与文本 diff）
+*.png            binary
+*.jpg            binary
+*.jpeg           binary
+*.gif            binary
+*.ico            binary
+*.exe            binary
+*.dll            binary
+
+# 图标文件走 Git LFS（须置于上方 binary 规则之后，后匹配的规则按属性覆盖前者）
+*.png            filter=lfs diff=lfs merge=lfs -text
+*.ico            filter=lfs diff=lfs merge=lfs -text
+
+# 生成文件：GitHub 语言统计与 diff 中标注
+Cargo.lock       text eol=lf linguist-generated=true diff
