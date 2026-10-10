@@ -14,14 +14,15 @@
 | --- | --- |
 | `main.rs` | 入口：单实例、提权检查、托盘图标与右键菜单、事件循环、切换结果的记账 |
 | `thermal.rs` | WMI 调用层，以及拥有全部 COM 对象的工作线程 |
-| `autostart.rs` | 开机自启动：用 `schtasks` 增删查名为 `GModeSwitcher` 的计划任务 |
+| `autostart.rs` | 开机自启动：用 `schtasks` 增删查名为 `GModeSwitcher` 的计划任务；启动时对比登记的 exe 路径，不一致就重建（自愈） |
 | `icon.rs` | 按模式解码内嵌的图标，生成托盘图标：平衡模式用蓝底 `#1a6497`，G 模式用红底 `#b82f2f` |
-| `settings.rs` | `settings.json` 读写，只存模式名 |
+| `settings.rs` | `settings.json` 读写：当前模式，以及启用自启动时登记的可执行文件路径 |
 | `log.rs` | 极简文件日志，无控制台时的唯一诊断通道 |
 | `paths.rs` | 数据目录 `%APPDATA%\GModeSwitcher`，首次使用时创建 |
 | `win.rs` | Win32 封装：命名互斥体、提权检测、`ShellExecuteW` 提权重启、隐藏窗口调用外部命令、`MessageBoxW` |
 
-数据目录下有两个文件：`settings.json`（当前模式）与 `gmode-switcher.log`（运行日志）。
+数据目录下有两个文件：`settings.json`（当前模式与登记的自启动路径）与
+`gmode-switcher.log`（运行日志）。
 
 ## 必须遵守的约束
 
@@ -65,6 +66,19 @@
 
 由此推出：**开机自启动不能用注册表 Run 键**（系统不会静默启动需要提权的程序），必须用计划
 任务 + `RunLevel HighestAvailable`，`autostart.rs` 里的 XML 模板就是这么写的。
+
+### 不要解析 `schtasks` 的输出
+
+`schtasks` 打印的内容既不是 UTF-8，也不遵循它自己那份任务 XML 里声明的 UTF-16，而是**系统
+ANSI 代码页**。实测数据（中文 Windows）：`schtasks /query /xml` 的全量输出 325869 字节里有
+396 个非 ASCII 字节，整体按 UTF-8 解码直接失败（`invalid start byte 0xb5`），按 GBK 才能解出
+`<Author>Mozilla</Author><Description>当 Firefox 未运行时，在后台更新…</Description>` 这样的
+内容。`win::run_hidden_captured` 的 `from_utf8_lossy` 遇到这些字节只会得到替换字符。
+
+因此：判断任务是否存在**只看退出码**；需要知道「任务里登记的可执行文件路径」时，用
+`settings.json` 里我们自己记录的那个路径（`autostart_path`），**不要回读任务**。否则路径里
+只要有中文，读回来的字符串永远和真实路径不相等，就会每次启动都重写一次任务；日志里那行
+`schtasks … exited with …` 的输出也可能是乱码，看退出码即可。
 
 ### 没有控制台，日志是唯一诊断通道
 
@@ -128,14 +142,16 @@ cargo test
 - 协议参数编码与模式常量、`name()` / `from_name()` 往返，以及老 `settings.json` 里残留的
   `"Custom"` 必须降级为 Balanced 而不是报错；
 - 计划任务 XML 的字节形态（UTF-16LE + BOM）与关键节点、`<Command>` 里的可执行文件路径、
-  确认没有 `<Arguments>`；
+  确认没有 `<Arguments>`，以及「登记路径与当前路径不一致才重建任务」的比对规则（含大小写不同
+  视为相同、没有记录时重建一次）；
 - 两版内嵌托盘图标（平衡版、G 模式版）都能解码成 32×32 RGBA、四角透明，且两版底色确实不同
   （蓝版偏蓝、红版偏红）；
-- `settings.json` 的解析与落盘格式。
+- `settings.json` 的解析与落盘格式，包括模式与 `autostart_path` 互不覆盖、清除记录、以及没有
+  `autostart_path` 的老文件仍能解析。
 
-这批测试不访问 WMI、不需要管理员权限、不依赖硬件与网络，也不读写 `%APPDATA%`，在普通开发者
-会话里直接跑即可。测试构建会跳过 `windows_subsystem` 属性（`#![cfg_attr(not(test), ...)]`），
-否则测试二进制是 GUI 子系统、输出会被吞掉。
+这批测试不访问 WMI、不碰计划任务、不需要管理员权限、不依赖硬件与网络，也不读写 `%APPDATA%`，
+在普通开发者会话里直接跑即可。测试构建会跳过 `windows_subsystem` 属性（`#![cfg_attr(not(test),
+...)]`），否则测试二进制是 GUI 子系统、输出会被吞掉。
 
 CI **刻意不跑测试**：发布工作流只做构建与打包。
 
@@ -162,3 +178,6 @@ CI **刻意不跑测试**：发布工作流只做构建与打包。
   没有复位成功。
 - 切到 G-Mode 的瞬间系统可能短暂卡顿，这是戴尔热控接口自身的行为，无法规避。
 - `exe` 尚未嵌入图标（需要资源编译器 `rc.exe`），`icons/app.ico` 已备好待用。
+- 自启动任务若被用户在任务计划程序里**禁用**（而不是删除），程序会把它当成仍然存在：
+  `schtasks /query` 对禁用任务同样返回成功。此时若又需要重写任务（程序被移动过、或没有路径
+  记录），重写会把 `<Enabled>true</Enabled>` 写回去，等于取消了用户的禁用。

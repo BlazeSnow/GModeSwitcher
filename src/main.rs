@@ -72,6 +72,11 @@ fn main() {
     let mode = settings::load();
     log::line(&format!("saved mode: {}", mode.name()));
 
+    // Self-healing for a moved executable: the logon task is repaired here, and the
+    // result doubles as the initial check mark of the menu item. Needs the
+    // administrator rights confirmed above, so it runs after that check.
+    let autostart_enabled = autostart::reconcile_at_startup();
+
     // The event loop and its proxy have to exist before the worker thread starts,
     // otherwise the worker has nowhere to report its init result to.
     let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
@@ -122,13 +127,8 @@ fn main() {
         mode == ThermalMode::GMode,
         None,
     );
-    let autostart_entry = CheckMenuItem::with_id(
-        ID_AUTOSTART,
-        "开机自启动",
-        true,
-        autostart::is_enabled(),
-        None,
-    );
+    let autostart_entry =
+        CheckMenuItem::with_id(ID_AUTOSTART, "开机自启动", true, autostart_enabled, None);
     let quit_entry = MenuItem::with_id(ID_QUIT, "退出", true, None);
     let items: [&dyn IsMenuItem; 7] = [
         &header,

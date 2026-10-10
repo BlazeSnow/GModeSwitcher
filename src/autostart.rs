@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::log;
+use crate::settings;
 use crate::win;
 
 pub const TASK_NAME: &str = "GModeSwitcher";
@@ -53,33 +54,110 @@ const TASK_XML: &str = r#"<?xml version="1.0" encoding="UTF-16"?>
 </Task>
 "#;
 
-/// Queried by exit code only, so no localized output has to be parsed.
+/// Whether the logon task exists, decided by `schtasks`' exit code alone.
+///
+/// Its output must never be parsed. Measured on this Chinese Windows: `schtasks`
+/// prints in the system ANSI code page, not in UTF-8 and not even in the UTF-16 its
+/// own task XML declares. A full `/query /xml` dump was 325869 bytes with 396
+/// non-ASCII bytes, it fails to decode as UTF-8 (`invalid start byte 0xb5`) and
+/// decodes fine as GBK, e.g. `<Author>Mozilla</Author>`. A lossy UTF-8 decode would
+/// turn such text into replacement characters, so comparing it against our own path
+/// would never match and the task would be rewritten on every single start. The path
+/// we register is therefore remembered in `settings.json` instead.
 pub fn is_enabled() -> bool {
     win::run_hidden("schtasks", &["/query", "/tn", TASK_NAME]) == Some(0)
 }
 
+/// Startup self-healing: if the task exists but is registered with a different
+/// executable path than the one running now, recreate it.
+///
+/// Returns whether autostart ends up enabled, which is what the menu check mark
+/// shows — the query happens exactly once, so starting up does not spawn `schtasks`
+/// twice. Needs administrator rights (recreating the task does), so it must be called
+/// after the elevation check. Failures are logged only: this is a repair of a working
+/// setup, and the task itself still exists even if the rewrite does not succeed.
+pub fn reconcile_at_startup() -> bool {
+    if !is_enabled() {
+        log::line("autostart: no logon task found");
+        return false;
+    }
+
+    let current = match current_exe_path() {
+        Ok(current) => current,
+        Err(error) => {
+            log::line(&format!("autostart: {error}"));
+            return true;
+        }
+    };
+
+    let recorded = settings::recorded_autostart_path();
+    if !needs_rewrite(recorded.as_deref(), &current) {
+        log::line("autostart: the registered path is still correct");
+        return true;
+    }
+
+    log::line(&format!(
+        "autostart: registered path {recorded:?} does not match {current:?}, recreating the task"
+    ));
+    match enable() {
+        Ok(()) => {
+            log::line("autostart: the task was updated to the current path");
+            true
+        }
+        Err(error) => {
+            log::line(&format!("autostart: could not update the task: {error}"));
+            true
+        }
+    }
+}
+
 pub fn enable() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|error| format!("无法获取程序自身路径：{error}"))?;
+    let exe = current_exe_path()?;
     let xml_path = std::env::temp_dir().join("gmode-switcher-task.xml");
-    write_task_xml(&xml_path, &exe.to_string_lossy())
-        .map_err(|error| format!("无法写入计划任务 XML：{error}"))?;
+    write_task_xml(&xml_path, &exe).map_err(|error| format!("无法写入计划任务 XML：{error}"))?;
 
     let xml_path = xml_path.to_string_lossy().into_owned();
     run(&["/create", "/xml", xml_path.as_str(), "/tn", TASK_NAME, "/f"])?;
+    // Remember what was registered; this record is the only reliable source for the
+    // path, because `schtasks` output cannot be decoded (see `is_enabled`).
+    settings::record_autostart_path(Some(&exe));
     log::line("scheduled task created");
     Ok(())
 }
 
 pub fn disable() -> Result<(), String> {
     run(&["/delete", "/tn", TASK_NAME, "/f"])?;
+    settings::record_autostart_path(None);
     log::line("scheduled task deleted");
     Ok(())
+}
+
+fn current_exe_path() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|exe| exe.to_string_lossy().into_owned())
+        .map_err(|error| format!("无法获取程序自身路径：{error}"))
+}
+
+/// Whether the task has to be recreated for `current`.
+///
+/// An unknown recorded path (older `settings.json`, or the file was deleted) counts
+/// as "rewrite once" so the task ends up pointing at this executable. Comparison is
+/// case-insensitive because Windows paths are: the drive letter and directory casing
+/// reported by `current_exe()` can differ from what was recorded, and a strict
+/// comparison would rewrite the task needlessly.
+fn needs_rewrite(recorded: Option<&str>, current: &str) -> bool {
+    match recorded {
+        Some(recorded) => !recorded.eq_ignore_ascii_case(current),
+        None => true,
+    }
 }
 
 fn run(args: &[&str]) -> Result<(), String> {
     match win::run_hidden_captured("schtasks", args) {
         Some((0, _)) => Ok(()),
         Some((code, output)) => {
+            // The captured text is in the ANSI code page, so it can look garbled in
+            // the log; the exit code is the part that decides anything.
             log::line(&format!("schtasks {args:?} exited with {code}: {output}"));
             Err(format!("schtasks 返回错误码 {code}"))
         }
@@ -183,5 +261,32 @@ mod tests {
                 "unreplaced {placeholder} in:\n{xml}"
             );
         }
+    }
+
+    #[test]
+    fn the_task_is_left_alone_when_the_recorded_path_matches() {
+        assert!(!needs_rewrite(Some(EXE), EXE));
+    }
+
+    /// Windows paths are case-insensitive, and `current_exe()` casing depends on how
+    /// the process was launched; a differing case must not trigger a rewrite.
+    #[test]
+    fn the_task_is_left_alone_when_only_the_casing_differs() {
+        assert!(!needs_rewrite(
+            Some(r"C:\Program Files\GModeSwitcher\GModeSwitcher.exe"),
+            r"c:\program files\gmodeswitcher\GMODESWITCHER.EXE"
+        ));
+    }
+
+    #[test]
+    fn the_task_is_rewritten_when_the_executable_moved() {
+        assert!(needs_rewrite(Some(r"C:\Old\GModeSwitcher.exe"), EXE));
+    }
+
+    /// Nothing recorded: an older settings file or a deleted one. Rewrite once so the
+    /// task ends up pointing at the executable that is running now.
+    #[test]
+    fn the_task_is_rewritten_when_no_path_was_recorded() {
+        assert!(needs_rewrite(None, EXE));
     }
 }
