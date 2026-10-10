@@ -33,7 +33,10 @@ jobs:
         if ([string]::IsNullOrWhiteSpace($version)) {
           throw "无法从 tag 解析版本号: $env:GITHUB_REF_NAME"
         }
+        # semver 的预发布版本带 "-"（如 1.0.0-beta.1）；日期式版本号（vYYYY.MM.DD.N）不带
+        $prerelease = $version.Contains('-')
         "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "prerelease=$($prerelease.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
     - name: Package
       shell: pwsh
@@ -44,3 +47,4 @@ jobs:
         artifacts: dist/GModeSwitcher-*-windows-amd64.zip
         generateReleaseNotes: true
         allowUpdates: true
+        prerelease: ${{ steps.version.outputs.prerelease }}
