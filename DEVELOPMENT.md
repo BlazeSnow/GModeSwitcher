@@ -1,0 +1,126 @@
+# GModeSwitcher 开发说明
+
+面向开发者的说明。面向使用者的功能、安装与使用见 [README.md](README.md)。
+开发时必须遵守的仓库级约定见 [AGENTS.md](AGENTS.md)。
+
+## 架构
+
+纯托盘程序：没有窗口、没有前端，启动后常驻通知区域，只做一件事——切换戴尔笔记本的
+热控性能模式。
+
+`src/` 下的模块：
+
+| 文件 | 职责 |
+| --- | --- |
+| `main.rs` | 入口：单实例、提权检查、托盘图标与右键菜单、事件循环、切换结果的记账 |
+| `thermal.rs` | WMI 调用层，以及拥有全部 COM 对象的工作线程 |
+| `autostart.rs` | 开机自启动：用 `schtasks` 增删查名为 `GModeSwitcher` 的计划任务 |
+| `icon.rs` | 解码内嵌的 `icons/gmode-32.png`，生成托盘图标 |
+| `settings.rs` | `settings.json` 读写，只存模式名 |
+| `log.rs` | 极简文件日志，无控制台时的唯一诊断通道 |
+| `paths.rs` | 数据目录 `%APPDATA%\GModeSwitcher`，首次使用时创建 |
+| `win.rs` | Win32 封装：命名互斥体、提权检测、`ShellExecuteW` 提权重启、隐藏窗口调用外部命令、`MessageBoxW` |
+
+数据目录下有两个文件：`settings.json`（当前模式）与 `gmode-switcher.log`（运行日志）。
+
+## 必须遵守的约束
+
+### 所有 COM/WMI 调用必须在同一条线程上
+
+`wmi` crate 的 `WMIConnection` 走 MTA（内部用 `CoIncrementMTAUsage`），COM 代理与创建它的
+单元绑定。因此程序把**全部** COM 操作收拢在一条专属工作线程里（`thermal::spawn`，线程名
+`gmode-wmi`），UI 线程只通过 `mpsc` 发命令、通过 tao 的事件收结果，**不得**接触任何 COM
+对象。新增功能时如果需要调用 WMI，一律加进工作线程的命令枚举，不要图省事在 UI 线程直接调。
+
+违反这条的症状是 `0x8001010E`：启动时（事件循环之前）调用可能没事，事件循环跑起来之后再
+从 UI 线程调用就会失败。
+
+### WMI 调用规格
+
+- 命名空间 `root\WMI`，类 `AWCCWmiMethodFunction`，方法 `Thermal_Control`。
+- 参数编码 `arg = ((mode & 0xFF) << 8) | 1`；参数名从方法签名现场读出（实际是 `arg2`），
+  不要硬编码。
+- 模式值：`Balanced = 0x97`、`G_Mode = 0xAB`。部分支持 USTT 的机型会拒绝 `0x97`，此时
+  改用 `0xA0`，能成功的那个值会被缓存供后续复用。
+- **必须在实例上调用，不能只用类名**。该类不是 singleton，键属性是 `InstanceName`，类名不是
+  合法的实例路径，用类名会得到 `0x8004102F`。实例路径由 `exec_query` 枚举后经
+  `IWbemClassWrapper::path()` 取得。
+- 方法的 MOF 是 `void Thermal_Control([in] uint32 arg2, [out] uint32 argr)`：**void 返回，
+  没有 `ReturnValue` 属性**，结果在出参 `argr` 里。
+- 判据：出参值**等于 0** 才算成功，`0xFFFFFFFF` 是失败哨兵。不要把它当成温度那样的数值读。
+
+### 需要管理员权限
+
+访问该 WMI 接口需要管理员权限（未提权时连枚举实例都会返回 access denied）。程序检测到未提权
+时会用 `ShellExecuteW` + `runas` 重新拉起自己然后退出。
+
+由此推出：**开机自启动不能用注册表 Run 键**（系统不会静默启动需要提权的程序），必须用计划
+任务 + `RunLevel HighestAvailable`，`autostart.rs` 里的 XML 模板就是这么写的。
+
+### 没有控制台，日志是唯一诊断通道
+
+程序是 GUI 子系统（不会弹黑框），出问题不会显示任何东西。`log.rs` 会把关键事件追加写入
+`%APPDATA%\GModeSwitcher\gmode-switcher.log`，排查问题先看它。涉及 WMI 的日志行会带上线程
+id、实例路径、参数名和出参的十六进制值，足以定位调用是否成功。
+
+日志写入失败会被静默忽略，不能因为日志出错而崩溃。
+
+### 编码
+
+- 源码与文档一律 **UTF-8**。
+- `.ps1` 脚本是 **UTF-8 with BOM + CRLF**：Windows PowerShell 5.1 在没有 BOM 时会按 GBK
+  解析，中文注释和字符串会乱码。
+- Git 的行尾与 LFS 规则见 `.gitattributes`。
+
+## 常见错误码
+
+| 现象 | 原因 |
+| --- | --- |
+| `0x8004102F`（`WBEM_E_INVALID_METHOD_PARAMETERS`） | object path 用了类名而不是实例路径 |
+| `0x8001010E`（`RPC_E_WRONG_THREAD`） | COM 代理在其所属单元之外被使用，即跨线程调了 WMI |
+| access denied | 进程没有管理员权限 |
+
+## 构建与运行
+
+```bash
+cargo build --release
+```
+
+产物是 `target\release\GModeSwitcher.exe`。程序运行时需要管理员权限。
+
+仓库根目录的脚本：
+
+| 脚本 | 用途 |
+| --- | --- |
+| `run.ps1` | 构建并提权启动（`-Release` 用 release 构建，`-SkipBuild` 跳过构建） |
+| `version.ps1` | 把 `VERSION` 里的版本号同步进 `Cargo.toml` 的 `[package] version` |
+| `tag.ps1` | 读 `VERSION` 打 tag 并推送，触发发布工作流 |
+
+改版本号的流程：编辑 `VERSION` → 执行 `version.ps1` → 构建一次让 `Cargo.lock` 跟上 → 执行
+`tag.ps1`。
+
+## 发布
+
+打 tag 后由 `.github/workflows/release.yml` 在 Windows runner 上执行 `cargo build --release`，
+再用 `ci/package.ps1` 打包成 `GModeSwitcher-<版本>-windows-amd64.zip` 并发布到 GitHub Release。
+只构建 amd64。
+
+## 与上游项目的关系
+
+本项目把 [tcc-g15](https://github.com/AlexIII/tcc-g15)（Python + PySide6）的**模式切换**部分
+重写为 Rust。上游以 GPLv3 授权，本项目同样以 GPLv3 授权，见 [LICENSE](LICENSE)。
+
+上游具备但本项目**有意不实现**的功能：温度与风扇转速显示、手动风扇调速、Custom 模式、G 键
+热键、fail-safe 自动兜底、主窗口界面。上游对这套 WMI 接口的记录在它自己的
+`WMI-AWCC-doc.md` 里，需要更多方法 ID 或未文档化接口时可以去查。
+
+## 已知限制与风险
+
+- 切换模式的 WMI 路径目前只有静态证据，尚未在真机上完整验证。若切换失败，先看日志里的
+  `object path` 与 `out parameters` 两行。
+- 读取「第一个出参」依赖签名中 `[out]` 参数的声明顺序；该方法只有一个出参，风险很低。
+- 退出时会阻塞 UI 最多 5 秒，等待把模式复位为 Balanced。
+- 切到 G-Mode 的瞬间系统可能短暂卡顿，这是戴尔热控接口自身的行为，无法规避。
+- 产物动态依赖 `VCRUNTIME140.dll`，干净系统上可能需要安装 VC++ 运行库；如需彻底自包含，
+  可加 `-C target-feature=+crt-static` 静态链接 CRT。
+- `exe` 尚未嵌入图标（需要资源编译器 `rc.exe`），`icons/gmode.ico` 已备好待用。
