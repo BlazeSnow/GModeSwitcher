@@ -1,0 +1,26 @@
+# Rust 构建产物
+/target/
+**/*.rs.bk
+
+# 发布打包输出
+/dist/
+
+# 运行日志
+*.log
+
+# 凭据
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+
+# 编辑器 / 工具
+.zcode/
+.zcodeignore
+
+# Windows 资源管理器
+Thumbs.db
+Desktop.ini
+
+# 说明：Cargo.lock 是二进制程序的依赖锁定，需要入库，不要忽略
