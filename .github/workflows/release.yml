@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+    - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+        # 图标走 Git LFS，必须检出真实文件，否则打包进 exe 的图标是指针
+        lfs: true
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Build
+      run: cargo build --release
+
+    - name: Get version
+      id: version
+      shell: pwsh
+      run: |
+        $version = $env:GITHUB_REF_NAME -replace '^v', ''
+        if ([string]::IsNullOrWhiteSpace($version)) {
+          throw "无法从 tag 解析版本号: $env:GITHUB_REF_NAME"
+        }
+        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+    - name: Package
+      shell: pwsh
+      run: pwsh -NoProfile -ExecutionPolicy Bypass -File ci/package.ps1 -Version '${{ steps.version.outputs.version }}'
+
+    - uses: ncipollo/release-action@v1
+      with:
+        artifacts: dist/GModeSwitcher-*-windows-amd64.zip
+        generateReleaseNotes: true
+        allowUpdates: true
