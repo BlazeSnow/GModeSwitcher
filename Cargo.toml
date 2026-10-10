@@ -1,0 +1,25 @@
+[package]
+name = "gmode-switcher"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[bin]]
+name = "GModeSwitcher"
+path = "src/main.rs"
+
+[dependencies]
+png = "0.18.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tao = "0.37.1"
+tray-icon = "0.26.1"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+wmi = "0.18.4"
