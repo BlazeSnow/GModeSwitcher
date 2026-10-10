@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="BlazeSnow.GModeSwitcher" version="{{VERSION}}" processorArchitecture="{{ARCHITECTURE}}" />
+  <description>GModeSwitcher - Dell G15 thermal mode switcher</description>
+  <!-- Elevation is deliberately left to the application: it relaunches itself with ShellExecuteW("runas") when it is not elevated. Do not switch this to requireAdministrator, that changes the start-up behaviour (UAC prompt before anything else) and is a separate decision. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11, the only range the README claims. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+  <!-- DPI awareness keeps MessageBoxW, our only UI, sharp on scaled displays. longPathAware is declared for long paths; it only takes effect when the long-path policy is enabled on the system as well. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

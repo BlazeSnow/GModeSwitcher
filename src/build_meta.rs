@@ -1,9 +1,9 @@
 // Build metadata that ends up in the executable's resources.
 //
-// `build.rs` embeds the icon and the version info, and shares the version conversion
-// with this module through `include!` so that it can be unit-tested: build scripts are
-// not covered by `cargo test`. Keep this file free of inner doc comments and of items
-// the build script would not be able to compile.
+// `build.rs` embeds the icon, the version info and `app.manifest`, and shares the small
+// conversions below with this module through `include!` so that they can be unit-tested:
+// build scripts are not covered by `cargo test`. Keep this file free of inner doc
+// comments and of items the build script would not be able to compile.
 
 /// Four-part numeric version for the `VERSIONINFO` resource.
 ///
@@ -22,6 +22,22 @@ pub fn file_version_quad(version: &str) -> String {
     }
 
     format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3])
+}
+
+/// The `processorArchitecture` of `app.manifest` for a Rust target architecture.
+///
+/// `mt.exe -validate_manifest` rejects the wildcard `*` that application manifests often
+/// carry in their own identity, so a concrete value is required. Only amd64 is shipped;
+/// the other arms keep the manifest correct should that ever change.
+// Used by `build.rs` through `include!` and by the tests below.
+#[allow(dead_code)]
+pub fn manifest_architecture(target_arch: &str) -> Option<&'static str> {
+    match target_arch {
+        "x86_64" => Some("amd64"),
+        "x86" => Some("x86"),
+        "aarch64" => Some("arm64"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -44,6 +60,14 @@ mod tests {
         assert_eq!(file_version_quad("1.0.0"), "1.0.0.0");
         assert_eq!(file_version_quad("1.2"), "1.2.0.0");
         assert_eq!(file_version_quad("1"), "1.0.0.0");
+    }
+
+    #[test]
+    fn known_target_architectures_map_to_manifest_names() {
+        assert_eq!(manifest_architecture("x86_64"), Some("amd64"));
+        assert_eq!(manifest_architecture("x86"), Some("x86"));
+        assert_eq!(manifest_architecture("aarch64"), Some("arm64"));
+        assert_eq!(manifest_architecture("riscv64"), None);
     }
 
     #[test]

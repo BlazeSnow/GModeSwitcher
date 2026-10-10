@@ -132,10 +132,34 @@ cargo build --release
 `src/build_meta.rs`（由 `build.rs` 用 `include!` 复用，因此有单元测试）。版本号取自
 `Cargo.toml`（由 `version.ps1` 从 `VERSION` 同步而来），不要在 `build.rs` 里写死。
 
+`build.rs` 还会把仓库根目录的 `app.manifest`（`RT_MANIFEST`，ID 1）嵌进 exe。清单里的
+`{{VERSION}}` 与 `{{ARCHITECTURE}}` 两个占位符由构建脚本填成数值四段版本（`1.0.0.0`）与目标
+架构名（`x86_64` → `amd64`）。清单声明了：
+
+- `assemblyIdentity`：`type="win32"`、`name="BlazeSnow.GModeSwitcher"`、四段版本、处理器架构。
+- `trustInfo`：`requestedExecutionLevel level="asInvoker" uiAccess="false"`。**故意保持
+  `asInvoker`**：提权是程序自己用 `ShellExecuteW("runas")` 在启动后判断并做的，换成
+  `requireAdministrator` 会改变启动行为（一启动就弹 UAC、再也无法以普通权限运行），属于另行
+  决定的事项，不要顺手改。
+- `compatibility`：只声明 Windows 10/11 的 `supportedOS` GUID，与 README 的支持范围一致。
+- `windowsSettings`：`dpiAware=true/pm`、`dpiAwareness=permonitorv2,permonitor`（不声明时高分屏
+  上会被系统位图拉伸，`MessageBoxW` 提示框会糊）、`longPathAware=true`。
+
+注意 `processorArchitecture` 不能写成 `*`：Windows 加载器接受通配符，但 SDK 的
+`mt.exe -validate_manifest` 会直接报 `c10100b7: Attribute "processorArchitecture" is
+wildcarded in the definition identity`，所以清单里用的是构建时替换进来的具体架构名。
+
 因为要调用资源编译器，**构建需要 Windows SDK 的 `rc.exe`**：装了 Visual Studio 或 Windows
 SDK 即可（CI 的 `windows-latest` runner 自带），crate 自己通过注册表
 `HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots` 定位它，不要硬编码 SDK 路径；装在
 非标准位置时可以用环境变量 `RC_PATH` 指过去。找不到或编译失败会让构建直接失败并打印中文说明。
+手工核对清单是否真的嵌进去，可以用 SDK 的 `mt.exe`：
+
+```bash
+export MSYS_NO_PATHCONV=1   # Git Bash 会把 / 开头的参数当路径改写
+mt.exe -nologo "-inputresource:target\release\GModeSwitcher.exe;#1" -out:target\extracted.manifest
+mt.exe -nologo -validate_manifest -manifest target\extracted.manifest
+```
 
 仓库根目录的脚本：
 
