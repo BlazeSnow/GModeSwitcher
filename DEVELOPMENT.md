@@ -40,14 +40,23 @@
 - 命名空间 `root\WMI`，类 `AWCCWmiMethodFunction`，方法 `Thermal_Control`。
 - 参数编码 `arg = ((mode & 0xFF) << 8) | 1`；参数名从方法签名现场读出（实际是 `arg2`），
   不要硬编码。
-- 模式值：`Balanced = 0x97`、`G_Mode = 0xAB`。部分支持 USTT 的机型会拒绝 `0x97`，此时
-  改用 `0xA0`，能成功的那个值会被缓存供后续复用。
+- 模式值：`Balanced = 0x97`、`G_Mode = 0xAB`。
+- **USTT 回退是实机上真的会走到的路径，不是理论上的兼容措施**：实测 `0x9701` 被拒绝（出参为
+  `0xFFFFFFFF`），回落到 `0xA001` 才成功；成功值会被缓存，之后切 Balanced 只发 `0xA001`。
+  探测顺序固定为 `0x97` → `0xA0`，取第一个成功的值。
 - **必须在实例上调用，不能只用类名**。该类不是 singleton，键属性是 `InstanceName`，类名不是
   合法的实例路径，用类名会得到 `0x8004102F`。实例路径由 `exec_query` 枚举后经
-  `IWbemClassWrapper::path()` 取得。
+  `IWbemClassWrapper::path()` 取得，取第一个能读到 `__Path` 的实例。
+- 实例路径的形态：主体是类名加键值，形如
+  `AWCCWmiMethodFunction.InstanceName="ACPI\PNP0C14\AWCC_0"`；`__Path` 也可能返回带
+  `\\<计算机名>\root\WMI:` 前缀的全限定形式。`ExecMethod` 两种都接受，代码不要对有没有前缀
+  作假设。
+- 该类在实测机型上只枚举到 1 个实例，即便如此也不要退回类名：枚举不到实例时应当直接报错。
 - 方法的 MOF 是 `void Thermal_Control([in] uint32 arg2, [out] uint32 argr)`：**void 返回，
-  没有 `ReturnValue` 属性**，结果在出参 `argr` 里。
-- 判据：出参值**等于 0** 才算成功，`0xFFFFFFFF` 是失败哨兵。不要把它当成温度那样的数值读。
+  没有 `ReturnValue` 属性**，结果在出参 `argr` 里。实测出参对象就只有 `argr` 一个属性，成功时
+  值为 `UI4(0)`。
+- 判据：出参值**等于 0** 才算成功，`0xFFFFFFFF` 是失败哨兵（实测被拒的模式值返回的正是它）。
+  不要把它当成温度那样的数值读。
 
 ### 需要管理员权限
 
@@ -99,6 +108,28 @@ cargo build --release
 改版本号的流程：编辑 `VERSION` → 执行 `version.ps1` → 构建一次让 `Cargo.lock` 跟上 → 执行
 `tag.ps1`。
 
+### 自测
+
+```bash
+cargo test
+```
+
+测试都是各模块内的 `#[cfg(test)] mod tests`：仓库只有 bin target、没有 lib，因此既不需要也
+不可能建 `tests/` 集成目录。它们只覆盖纯逻辑：
+
+- 协议参数编码与模式常量、`name()` / `from_name()` 往返，以及老 `settings.json` 里残留的
+  `"Custom"` 必须降级为 Balanced 而不是报错；
+- 计划任务 XML 的字节形态（UTF-16LE + BOM）与关键节点、`<Command>` 里的可执行文件路径、
+  确认没有 `<Arguments>`；
+- 内嵌托盘图标的 PNG 解码、尺寸与四角透明；
+- `settings.json` 的解析与落盘格式。
+
+这批测试不访问 WMI、不需要管理员权限、不依赖硬件与网络，也不读写 `%APPDATA%`，在普通开发者
+会话里直接跑即可。测试构建会跳过 `windows_subsystem` 属性（`#![cfg_attr(not(test), ...)]`），
+否则测试二进制是 GUI 子系统、输出会被吞掉。
+
+CI **刻意不跑测试**：发布工作流只做构建与打包。
+
 ## 发布
 
 打 tag 后由 `.github/workflows/release.yml` 在 Windows runner 上执行 `cargo build --release`，
@@ -116,10 +147,10 @@ cargo build --release
 
 ## 已知限制与风险
 
-- 切换模式的 WMI 路径目前只有静态证据，尚未在真机上完整验证。若切换失败，先看日志里的
-  `object path` 与 `out parameters` 两行。
-- 读取「第一个出参」依赖签名中 `[out]` 参数的声明顺序；该方法只有一个出参，风险很低。
-- 退出时会阻塞 UI 最多 5 秒，等待把模式复位为 Balanced。
+- 出参读取的优先级是「有 `ReturnValue` 就用它，否则取签名里的第一个出参」；这个方法是 void
+  返回，实测只有一个出参 `argr`。换机型或驱动版本后若出参顺序变化，取到的值可能不是结果码。
+- 退出时 UI 线程最多阻塞 5 秒等待把模式复位为 Balanced；超时会记日志并继续退出，此时模式可能
+  没有复位成功。
 - 切到 G-Mode 的瞬间系统可能短暂卡顿，这是戴尔热控接口自身的行为，无法规避。
 - 产物动态依赖 `VCRUNTIME140.dll`，干净系统上可能需要安装 VC++ 运行库；如需彻底自包含，
   可加 `-C target-feature=+crt-static` 静态链接 CRT。
