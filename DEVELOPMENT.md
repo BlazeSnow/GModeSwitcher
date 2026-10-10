@@ -97,6 +97,14 @@ cargo build --release
 
 产物是 `target\release\GModeSwitcher.exe`。程序运行时需要管理员权限。
 
+构建启用了**静态链接 CRT**：`.cargo/config.toml` 给 `x86_64-pc-windows-msvc` 加了
+`-C target-feature=+crt-static`，因此产物只依赖 Windows 系统 DLL，导入表里没有
+`VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，在干净系统上也能直接双击运行。代价是体积约
++96 KB。
+
+这套参数放在 `.cargo/config.toml` 而不是 CI 的 `RUSTFLAGS` 里，是为了让本地构建与发布产物
+完全一致；环境变量 `RUSTFLAGS` 的优先级高于该文件，两边都不要设置它。
+
 仓库根目录的脚本：
 
 | 脚本 | 用途 |
@@ -152,6 +160,4 @@ CI **刻意不跑测试**：发布工作流只做构建与打包。
 - 退出时 UI 线程最多阻塞 5 秒等待把模式复位为 Balanced；超时会记日志并继续退出，此时模式可能
   没有复位成功。
 - 切到 G-Mode 的瞬间系统可能短暂卡顿，这是戴尔热控接口自身的行为，无法规避。
-- 产物动态依赖 `VCRUNTIME140.dll`，干净系统上可能需要安装 VC++ 运行库；如需彻底自包含，
-  可加 `-C target-feature=+crt-static` 静态链接 CRT。
 - `exe` 尚未嵌入图标（需要资源编译器 `rc.exe`），`icons/gmode.ico` 已备好待用。

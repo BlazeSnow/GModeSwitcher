@@ -1,0 +1,10 @@
+# 静态链接 CRT（MSVC 运行库），让产物只依赖 Windows 系统 DLL。
+#
+# msvc 目标默认动态链接 CRT，会在导入表里留下 VCRUNTIME140.dll 和一组 api-ms-win-crt-*；
+# 缺少前者的机器上程序会在启动前就失败（弹「丢失 VCRUNTIME140.dll」）。静态链接后这两类
+# 依赖全部消失，代价是体积约 +96 KB。
+#
+# 放在这里而不是 CI 的 RUSTFLAGS 里，是为了让本地构建与发布产物用同一套参数：环境变量
+# RUSTFLAGS 优先级高于本文件，两边都不要设置它。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
