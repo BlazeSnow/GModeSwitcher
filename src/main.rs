@@ -10,20 +10,33 @@ mod settings;
 mod thermal;
 mod win;
 
+use std::sync::mpsc::{self, Sender};
+use std::time::Duration;
+
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
-use crate::thermal::{ThermalControl, ThermalMode};
+use crate::thermal::{Command, ThermalMode, WorkerEvent};
 
 const ID_MODE_BALANCED: &str = "mode.balanced";
 const ID_MODE_GMODE: &str = "mode.gmode";
 const ID_AUTOSTART: &str = "autostart";
 const ID_QUIT: &str = "quit";
 
+/// How long the exit path waits for the worker to restore Balanced mode.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(5);
+
 enum UserEvent {
     Menu(MenuEvent),
+    /// Result of a mode switch, reported by the WMI worker.
+    ModeApplied {
+        mode: ThermalMode,
+        ok: bool,
+    },
+    /// The worker could not set WMI up at all; there is nothing left to do but quit.
+    InitFailed(String),
 }
 
 fn main() {
@@ -57,21 +70,37 @@ fn main() {
     let mode = settings::load();
     log::line(&format!("saved mode: {}", mode.name()));
 
-    let thermal = match ThermalControl::new() {
-        Ok(thermal) => thermal,
+    // The event loop and its proxy have to exist before the worker thread starts,
+    // otherwise the worker has nowhere to report its init result to.
+    let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
+    let event_loop = event_loop_builder.build();
+    let proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some({
+        let proxy = proxy.clone();
+        move |event| {
+            let _ = proxy.send_event(UserEvent::Menu(event));
+        }
+    }));
+
+    // Every COM/WMI object lives on this worker thread; the UI thread never touches
+    // COM itself, it only sends commands and receives `UserEvent`s.
+    let commands = match thermal::spawn({
+        let proxy = proxy.clone();
+        move |event| {
+            let user_event = match event {
+                WorkerEvent::Applied { mode, ok } => UserEvent::ModeApplied { mode, ok },
+                WorkerEvent::InitFailed(message) => UserEvent::InitFailed(message),
+            };
+            let _ = proxy.send_event(user_event);
+        }
+    }) {
+        Ok(commands) => commands,
         Err(message) => {
-            log::line(&format!("WMI initialization failed: {message}"));
+            log::line(&format!("cannot start the WMI worker: {message}"));
             win::error_box("GModeSwitcher 启动失败", &message);
             std::process::exit(1);
         }
     };
-
-    let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
-    let event_loop = event_loop_builder.build();
-    let proxy = event_loop.create_proxy();
-    MenuEvent::set_event_handler(Some(move |event| {
-        let _ = proxy.send_event(UserEvent::Menu(event));
-    }));
 
     let menu = Menu::new();
     let header = PredefinedMenuItem::section_header("模式");
@@ -137,35 +166,49 @@ fn main() {
 
     let mut app = App {
         tray,
-        thermal,
+        commands,
         balanced,
         g_mode,
         autostart_entry,
         mode,
     };
 
-    // Apply the remembered mode on startup.
+    // Apply the remembered mode on startup; the accounting happens when the worker
+    // reports the result back as a user event.
     app.switch_mode(mode);
 
     let mut app = Some(app);
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
-        let Event::UserEvent(UserEvent::Menu(event)) = event else {
+        let Event::UserEvent(event) = event else {
             return;
         };
 
         let mut quit = false;
+        let mut init_failure = None;
         {
             let Some(state) = app.as_mut() else {
                 return;
             };
-            match event.id.0.as_str() {
-                ID_MODE_BALANCED => state.switch_mode(ThermalMode::Balanced),
-                ID_MODE_GMODE => state.switch_mode(ThermalMode::GMode),
-                ID_AUTOSTART => state.toggle_autostart(),
-                ID_QUIT => quit = true,
-                other => log::line(&format!("unknown menu event: {other}")),
+            match event {
+                UserEvent::Menu(event) => match event.id.0.as_str() {
+                    ID_MODE_BALANCED => state.switch_mode(ThermalMode::Balanced),
+                    ID_MODE_GMODE => state.switch_mode(ThermalMode::GMode),
+                    ID_AUTOSTART => state.toggle_autostart(),
+                    ID_QUIT => quit = true,
+                    other => log::line(&format!("unknown menu event: {other}")),
+                },
+                UserEvent::ModeApplied { mode, ok } => state.on_mode_applied(mode, ok),
+                UserEvent::InitFailed(message) => init_failure = Some(message),
             }
+        }
+
+        if let Some(message) = init_failure {
+            // Dropping the app removes the tray icon before the dialog shows up.
+            drop(app.take());
+            log::line(&format!("WMI worker is unavailable, exiting: {message}"));
+            win::error_box("GModeSwitcher 启动失败", &message);
+            std::process::exit(1);
         }
 
         if quit {
@@ -186,7 +229,8 @@ fn tooltip(mode: ThermalMode) -> String {
 
 struct App {
     tray: TrayIcon,
-    thermal: ThermalControl,
+    /// Command channel of the WMI worker; the UI thread holds no COM object at all.
+    commands: Sender<Command>,
     balanced: CheckMenuItem,
     g_mode: CheckMenuItem,
     autostart_entry: CheckMenuItem,
@@ -194,9 +238,17 @@ struct App {
 }
 
 impl App {
+    /// Asks the worker to switch mode. The check marks, the tooltip and the settings
+    /// file are only touched once the worker reports back in `on_mode_applied`.
     fn switch_mode(&mut self, mode: ThermalMode) {
-        log::line(&format!("switching to {}", mode.name()));
-        if !self.thermal.apply(mode) {
+        log::line(&format!("requesting {} mode", mode.name()));
+        if let Err(error) = self.commands.send(Command::Apply(mode)) {
+            log::line(&format!("WMI worker is gone, cannot switch mode: {error}"));
+        }
+    }
+
+    fn on_mode_applied(&mut self, mode: ThermalMode, ok: bool) {
+        if !ok {
             log::line(&format!("switching to {} failed", mode.name()));
             win::error_box(
                 "GModeSwitcher",
@@ -238,17 +290,32 @@ impl App {
         self.autostart_entry.set_checked(autostart::is_enabled());
     }
 
-    /// Never leave the machine in G-Mode after quitting.
+    /// Never leave the machine in G-Mode after quitting: the worker is asked to switch
+    /// back to Balanced and this thread waits (bounded) for its answer before quitting.
     fn restore_balanced(&mut self) {
         if self.mode == ThermalMode::Balanced {
             log::line("already Balanced, nothing to restore");
         } else {
             log::line("restoring Balanced before exit");
-            if !self.thermal.apply(ThermalMode::Balanced) {
-                log::line("failed to restore Balanced before exit");
+            let (ack, result) = mpsc::channel();
+            if self
+                .commands
+                .send(Command::ApplyBlocking(ThermalMode::Balanced, ack))
+                .is_err()
+            {
+                log::line("WMI worker is gone, cannot restore Balanced");
+            } else {
+                match result.recv_timeout(RESTORE_TIMEOUT) {
+                    Ok(true) => log::line("Balanced restored before exit"),
+                    Ok(false) => log::line("worker could not restore Balanced before exit"),
+                    Err(error) => log::line(&format!(
+                        "gave up waiting {RESTORE_TIMEOUT:?} for the Balanced restore: {error}"
+                    )),
+                }
             }
         }
         settings::save(ThermalMode::Balanced);
+        let _ = self.commands.send(Command::Shutdown);
     }
 
     fn refresh_mode_marks(&self) {
