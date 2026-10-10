@@ -16,6 +16,7 @@
 | `thermal.rs` | WMI 调用层，以及拥有全部 COM 对象的工作线程 |
 | `autostart.rs` | 开机自启动：用 `schtasks` 增删查名为 `GModeSwitcher` 的计划任务；启动时对比登记的 exe 路径，不一致就重建（自愈） |
 | `icon.rs` | 按模式解码内嵌的图标，生成托盘图标：平衡模式用蓝底 `#1a6497`，G 模式用红底 `#b82f2f` |
+| `build_meta.rs` | 构建元数据：版本号到资源数值四段的转换，与 `build.rs` 共用 |
 | `settings.rs` | `settings.json` 读写：当前模式，以及启用自启动时登记的可执行文件路径 |
 | `log.rs` | 极简文件日志，无控制台时的唯一诊断通道 |
 | `paths.rs` | 数据目录 `%APPDATA%\GModeSwitcher`，首次使用时创建 |
@@ -124,6 +125,18 @@ cargo build --release
 这套参数放在 `.cargo/config.toml` 而不是 CI 的 `RUSTFLAGS` 里，是为了让本地构建与发布产物
 完全一致；环境变量 `RUSTFLAGS` 的优先级高于该文件，两边都不要设置它。
 
+`build.rs` 会把 `icons/app.ico`（蓝底那张）和版本信息编译进 exe 的资源段：
+`FileDescription`、`ProductName`、`CompanyName`、`LegalCopyright` 等字符串字段，以及
+`FILEVERSION` / `PRODUCTVERSION` 这两个数值四段字段。字符串字段用的是完整版本号（如
+`1.0.0-beta.1`），数值字段无法表示 `-beta.1` 这类后缀，会截成 `1.0.0.0`；转换函数在
+`src/build_meta.rs`（由 `build.rs` 用 `include!` 复用，因此有单元测试）。版本号取自
+`Cargo.toml`（由 `version.ps1` 从 `VERSION` 同步而来），不要在 `build.rs` 里写死。
+
+因为要调用资源编译器，**构建需要 Windows SDK 的 `rc.exe`**：装了 Visual Studio 或 Windows
+SDK 即可（CI 的 `windows-latest` runner 自带），crate 自己通过注册表
+`HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots` 定位它，不要硬编码 SDK 路径；装在
+非标准位置时可以用环境变量 `RC_PATH` 指过去。找不到或编译失败会让构建直接失败并打印中文说明。
+
 仓库根目录的脚本：
 
 | 脚本 | 用途 |
@@ -152,7 +165,9 @@ cargo test
 - 两版内嵌托盘图标（平衡版、G 模式版）都能解码成 32×32 RGBA、四角透明，且两版底色确实不同
   （蓝版偏蓝、红版偏红）；
 - `settings.json` 的解析与落盘格式，包括模式与 `autostart_path` 互不覆盖、清除记录、以及没有
-  `autostart_path` 的老文件仍能解析。
+  `autostart_path` 的老文件仍能解析；
+- 版本号到资源数值四段的转换（`1.0.0-beta.1` → `1.0.0.0`），以及一条运行时断言「当前这个测试
+  exe 至少带一个图标组」——它能挡住「资源根本没嵌进去」这类静默失败。
 
 这批测试不访问 WMI、不碰计划任务、不需要管理员权限、不依赖硬件与网络，也不读写 `%APPDATA%`，
 在普通开发者会话里直接跑即可。测试构建会跳过 `windows_subsystem` 属性（`#![cfg_attr(not(test),
@@ -181,7 +196,6 @@ CI **刻意不跑测试**：发布工作流只做构建与打包。
 - 出参读取的优先级是「有 `ReturnValue` 就用它，否则取签名里的第一个出参」；这个方法是 void
   返回，实测只有一个出参 `argr`。换机型或驱动版本后若出参顺序变化，取到的值可能不是结果码。
 - 切到 G-Mode 的瞬间系统可能短暂卡顿，这是戴尔热控接口自身的行为，无法规避。
-- `exe` 尚未嵌入图标（需要资源编译器 `rc.exe`），`icons/app.ico` 已备好待用。
 - 自启动任务若被用户在任务计划程序里**禁用**（而不是删除），程序会把它当成仍然存在：
   `schtasks /query` 对禁用任务同样返回成功。此时若又需要重写任务（程序被移动过、或没有路径
   记录），重写会把 `<Enabled>true</Enabled>` 写回去，等于取消了用户的禁用。

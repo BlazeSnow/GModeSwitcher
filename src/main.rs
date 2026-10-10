@@ -5,6 +5,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod autostart;
+mod build_meta;
 mod icon;
 mod log;
 mod paths;
